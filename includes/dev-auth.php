@@ -28,7 +28,7 @@ function devQuickLoginAccounts(): array
             'role'  => ROLE_CAMPUS_ADMIN,
         ],
         [
-            'email' => 'director.partnership@dwu.ac.pg',
+            'email' => '230172student@dwu.ac.pg',
             'label' => 'Partnership Director',
             'role'  => ROLE_PARTNERSHIP_DIRECTOR,
         ],

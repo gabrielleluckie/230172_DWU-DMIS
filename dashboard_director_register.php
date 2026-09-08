@@ -34,7 +34,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'document_path'       => $documentPath,
             ], (int) $user['id'], $user['name']);
 
-            setFlash('success', 'Agreement #' . $agreementId . ' registered successfully in the live registry.');
+            setFlash(
+                'success',
+                'Agreement #' . $agreementId . ' registered successfully. Notification emails were sent to the partner and director with a secure access link.'
+            );
         } catch (Throwable $exception) {
             setFlash('error', $exception->getMessage());
         }

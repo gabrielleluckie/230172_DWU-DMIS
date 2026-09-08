@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use App\Models\Agreement;
 
+require_once __DIR__ . '/agreement_notify.php';
+
 /**
  * Resolve registry table names (supports singular live schema and legacy plural names).
  *
@@ -783,13 +785,16 @@ function registerActivePartnership(
             $contactFax
         );
 
+        ensureAgreementAccessTokenColumn($pdo);
+        $accessToken = generateUniqueAgreementAccessToken($pdo);
+
         $insertAgreement = $pdo->prepare(
             "INSERT INTO `{$agreementTable}`
                 (Partner_ID, Campus_ID, Submitted_By, Reviewed_By, Partnership_Type, Agreement_Type,
-                 Scope_Description, Status, Signed_Date, Expiry_Date, Document_Path)
+                 Scope_Description, Status, Signed_Date, Expiry_Date, Document_Path, access_token)
              VALUES
                 (:partner_id, :campus_id, :submitted_by, :reviewed_by, :partnership_type, :agreement_type,
-                 :scope_description, :status, :signed_date, :expiry_date, :document_path)"
+                 :scope_description, :status, :signed_date, :expiry_date, :document_path, :access_token)"
         );
 
         $insertAgreement->execute([
@@ -804,6 +809,7 @@ function registerActivePartnership(
             'signed_date'        => $signedDate,
             'expiry_date'        => $expiryDate,
             'document_path'      => $documentPath,
+            'access_token'       => $accessToken,
         ]);
 
         $agreementId = (int) $pdo->lastInsertId();
@@ -856,6 +862,14 @@ function registerActivePartnership(
         }
 
         $pdo->commit();
+
+        $directorEmail = fetchUserEmailById($pdo, $directorUserId);
+
+        try {
+            sendNewAgreementRegisteredEmail($pdo, $agreementId, $contactEmail, $directorEmail);
+        } catch (Throwable $mailException) {
+            error_log('New agreement notification failed for #' . $agreementId . ': ' . $mailException->getMessage());
+        }
 
         return $agreementId;
     } catch (Throwable $exception) {

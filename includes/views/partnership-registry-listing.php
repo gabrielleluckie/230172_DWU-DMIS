@@ -51,7 +51,7 @@ $listCampus = (int) ($filterCampus ?? 0);
     <?php
     $printDirector = $registryDirector ?? null;
     $printDirectorName = $printDirector['name'] ?? 'Partnership Director';
-    $printDirectorEmail = $printDirector['email'] ?? 'director.partnership@dwu.ac.pg';
+    $printDirectorEmail = $printDirector['email'] ?? '230172student@dwu.ac.pg';
     $printDirectorPhone = $printDirector['phone'] ?? '';
     $printLogoUrl = assetUrl('assets/images/dwu_logo.jpg');
     ?>

@@ -27,7 +27,7 @@ SET Email = 'admin.wewak@dwu.ac.pg',
 WHERE User_ID = 3 OR (Role = 'campus_admin' AND Campus_ID = 3);
 
 UPDATE users
-SET Email = 'director.partnership@dwu.ac.pg',
+SET Email = '230172student@dwu.ac.pg',
     First_Name = 'Mary',
     Last_Name = 'Robinson',
     Campus_ID = NULL,
