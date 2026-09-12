@@ -54,11 +54,13 @@ try {
 
 if (file_exists(__DIR__ . '/schema.sql')) {
     try {
+        $pdo->exec('SET FOREIGN_KEY_CHECKS = 0;');
+        $pdo->exec('DROP TABLE IF EXISTS agreement_history, agreement_draft, proposal_draft, agreement, contact, partner, users, campus;');
+        $pdo->exec('SET FOREIGN_KEY_CHECKS = 1;');
+
         $sql = file_get_contents(__DIR__ . '/schema.sql');
         $pdo->exec($sql);
     } catch (PDOException $e) {
-        die('SQL Import Error: ' . $e->getMessage());
+        die('SQL Error: ' . $e->getMessage());
     }
-} else {
-    die('Error: schema.sql file was not found in ' . __DIR__);
 }
