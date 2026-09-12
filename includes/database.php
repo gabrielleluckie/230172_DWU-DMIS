@@ -5,93 +5,48 @@ declare(strict_types=1);
 /**
  * PDMIS — PDO database connection.
  *
- * Credentials come from environment variables so the same code works on
- * local XAMPP and on Sevalla. Sevalla: Applications → Networking →
- * Add internal connection → “Add environment variables to the application”.
- *
- * Accepted names (first match wins):
- *   Host     DB_HOST / DATABASE_HOST / PDMIS_DB_HOST
- *   Name     DB_NAME / DATABASE_NAME / PDMIS_DB_NAME
- *   User     DB_USER / DATABASE_USER / PDMIS_DB_USER
- *   Password DB_PASS / DB_PASSWORD / DATABASE_PASSWORD / PDMIS_DB_PASS
- *   Port     DB_PORT / DATABASE_PORT / PDMIS_DB_PORT  (default 3306)
+ * Reads Sevalla / hosting credentials from $_ENV, $_SERVER, then getenv().
+ * Local XAMPP still works when those variables are unset.
  */
 
-function pdmisReadEnv(string ...$keys): string
-{
-    foreach ($keys as $key) {
-        foreach ([getenv($key), $_ENV[$key] ?? null, $_SERVER[$key] ?? null] as $value) {
-            if (is_string($value) && $value !== '') {
-                return $value;
-            }
-        }
-    }
+$host     = $_ENV['DB_HOST']     ?? $_SERVER['DB_HOST']     ?? getenv('DB_HOST');
+$port     = $_ENV['DB_PORT']     ?? $_SERVER['DB_PORT']     ?? getenv('DB_PORT')     ?? 3306;
+$db       = $_ENV['DB_NAME']     ?? $_SERVER['DB_NAME']     ?? getenv('DB_NAME');
+$user     = $_ENV['DB_USER']     ?? $_SERVER['DB_USER']     ?? getenv('DB_USER');
+$password = $_ENV['DB_PASS']     ?? $_SERVER['DB_PASS']     ?? getenv('DB_PASS');
 
-    return '';
+if ($host === false || $host === null || $host === '') {
+    $host = $_ENV['DATABASE_HOST'] ?? $_SERVER['DATABASE_HOST'] ?? getenv('DATABASE_HOST') ?: 'localhost';
 }
 
-function pdmisIsLocalDatabaseEnv(): bool
-{
-    $appEnv = strtolower(pdmisReadEnv('APP_ENV'));
-
-    if ($appEnv === 'local') {
-        return true;
-    }
-
-    if ($appEnv === 'production' || $appEnv === 'staging') {
-        return false;
-    }
-
-    $host = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
-
-    return $host === ''
-        || str_contains($host, 'localhost')
-        || str_contains($host, '127.0.0.1')
-        || str_starts_with($host, '[::1]');
+if ($port === false || $port === null || $port === '') {
+    $port = $_ENV['DATABASE_PORT'] ?? $_SERVER['DATABASE_PORT'] ?? getenv('DATABASE_PORT') ?: 3306;
 }
 
-$dbHost = pdmisReadEnv('DB_HOST', 'DATABASE_HOST', 'PDMIS_DB_HOST');
-$dbName = pdmisReadEnv('DB_NAME', 'DATABASE_NAME', 'PDMIS_DB_NAME');
-$dbUser = pdmisReadEnv('DB_USER', 'DATABASE_USER', 'PDMIS_DB_USER');
-$dbPass = pdmisReadEnv('DB_PASS', 'DB_PASSWORD', 'DATABASE_PASSWORD', 'PDMIS_DB_PASS');
-$dbPort = pdmisReadEnv('DB_PORT', 'DATABASE_PORT', 'PDMIS_DB_PORT');
-$dbCharset = 'utf8mb4';
-
-if (pdmisIsLocalDatabaseEnv()) {
-    $dbHost = $dbHost !== '' ? $dbHost : 'localhost';
-    $dbName = $dbName !== '' ? $dbName : 'PartnershipRegistry';
-    $dbUser = $dbUser !== '' ? $dbUser : 'root';
-    $dbPort = $dbPort !== '' ? $dbPort : '3306';
+if ($db === false || $db === null || $db === '') {
+    $db = $_ENV['DATABASE_NAME'] ?? $_SERVER['DATABASE_NAME'] ?? getenv('DATABASE_NAME') ?: 'PartnershipRegistry';
 }
 
-if ($dbPort === '') {
-    $dbPort = '3306';
+if ($user === false || $user === null || $user === '') {
+    $user = $_ENV['DATABASE_USER'] ?? $_SERVER['DATABASE_USER'] ?? getenv('DATABASE_USER') ?: 'root';
 }
 
-if ($dbHost === '' || $dbName === '' || $dbUser === '') {
-    error_log('PDMIS database connection failed: missing DB_HOST, DB_NAME, or DB_USER environment variables.');
-    http_response_code(500);
-    exit('Database connection failed. Please contact the system administrator.');
+if ($password === false || $password === null || $password === '') {
+    $password = $_ENV['DB_PASSWORD']
+        ?? $_SERVER['DB_PASSWORD']
+        ?? getenv('DB_PASSWORD')
+        ?: ($_ENV['DATABASE_PASSWORD'] ?? $_SERVER['DATABASE_PASSWORD'] ?? getenv('DATABASE_PASSWORD') ?: '');
 }
-
-$dsn = sprintf(
-    'mysql:host=%s;port=%s;dbname=%s;charset=%s',
-    $dbHost,
-    $dbPort,
-    $dbName,
-    $dbCharset
-);
-
-$pdoOptions = [
-    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    PDO::ATTR_EMULATE_PREPARES   => false,
-];
 
 try {
-    $pdo = new PDO($dsn, $dbUser, $dbPass, $pdoOptions);
-} catch (PDOException $exception) {
-    error_log('PDMIS database connection failed: ' . $exception->getMessage());
+    $dsn = "mysql:host={$host};port={$port};dbname={$db};charset=utf8mb4";
+    $pdo = new PDO($dsn, (string) $user, (string) $password, [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES   => false,
+    ]);
+} catch (PDOException $e) {
+    error_log('PDMIS database connection failed: ' . $e->getMessage());
     http_response_code(500);
-    exit('Database connection failed. Please contact the system administrator.');
+    die('Database connection failed: ' . $e->getMessage());
 }
