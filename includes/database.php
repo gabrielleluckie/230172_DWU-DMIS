@@ -50,3 +50,35 @@ try {
     http_response_code(500);
     die('Database connection failed: ' . $e->getMessage());
 }
+
+// Automatically creates tables in MySQL if they do not exist
+$schemaFile = __DIR__ . '/schema.sql';
+if (!is_file($schemaFile)) {
+    $schemaFile = dirname(__DIR__) . '/schema.sql';
+}
+
+if (is_file($schemaFile)) {
+    try {
+        $existingTables = $pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
+        if ($existingTables === []) {
+            $sql = (string) file_get_contents($schemaFile);
+            $sql = preg_replace('/^\s*--.*$/m', '', $sql) ?? $sql;
+            $sql = preg_replace('/\/\*!.*?\*\//s', '', $sql) ?? $sql;
+
+            foreach (preg_split('/;\s*$/m', $sql) ?: [] as $statement) {
+                $statement = trim($statement);
+                if ($statement === '') {
+                    continue;
+                }
+
+                try {
+                    $pdo->exec($statement);
+                } catch (PDOException $ignored) {
+                    // Tables already exist or statement executed
+                }
+            }
+        }
+    } catch (PDOException $e) {
+        // Tables already exist or statement executed
+    }
+}
