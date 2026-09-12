@@ -159,15 +159,9 @@
         display: none !important;
     }
 
-    .registry-status-badge,
-    .registry-status-badge.badge,
-    .registry-status-badge.bg-success,
-    .registry-status-badge.bg-danger,
-    .registry-status-badge.bg-warning,
-    .registry-status-badge.bg-secondary {
+    .registry-status-text {
         display: inline;
         background: none !important;
-        background-color: transparent !important;
         color: #000000 !important;
         border: none !important;
         border-radius: 0 !important;

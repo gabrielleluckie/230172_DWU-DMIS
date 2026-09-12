@@ -51,7 +51,7 @@ $formatDate = static function (?string $value): string {
                 <i class="bi bi-arrow-left" aria-hidden="true"></i>
                 Back to list
             </a>
-            <span class="badge rounded-pill <?= statusBadgeClasses((string) ($viewAgreement['status'] ?? '')) ?>">
+            <span class="registry-status-text <?= statusBadgeClasses((string) ($viewAgreement['status'] ?? '')) ?>">
                 <?= e((string) ($viewAgreement['status'] ?? '')) ?>
             </span>
         </div>
@@ -185,7 +185,7 @@ $formatDate = static function (?string $value): string {
                                     <?= e($expiryLabel) ?>
                                 </td>
                                 <td>
-                                    <span class="badge rounded-pill <?= statusBadgeClasses((string) ($agreement['status'] ?? '')) ?>">
+                                    <span class="registry-status-text <?= statusBadgeClasses((string) ($agreement['status'] ?? '')) ?>">
                                         <?= e((string) ($agreement['status'] ?? '')) ?>
                                     </span>
                                 </td>

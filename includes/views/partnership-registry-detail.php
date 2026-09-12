@@ -101,7 +101,7 @@ $renderFactValue = static function (string $label, string $value) use ($websiteH
             Back to registry
         </a>
         <div class="registry-detail-toolbar-actions">
-            <span class="badge rounded-pill <?= statusBadgeClasses((string) ($viewAgreement['status'] ?? '')) ?>">
+            <span class="registry-status-text <?= statusBadgeClasses((string) ($viewAgreement['status'] ?? '')) ?>">
                 <?= e((string) ($viewAgreement['status'] ?? '')) ?>
             </span>
             <?php if ($hasDocument): ?>

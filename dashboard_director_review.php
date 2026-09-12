@@ -42,6 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $pendingProposals = fetchSubmittedProposals($pdo);
 $pendingCount = count($pendingProposals);
+$draftCount = count(fetchDirectorAgreementDrafts($pdo, (int) $user['id']));
 
 renderDirectorDashboardHeader(
     $user,
@@ -54,7 +55,7 @@ renderDirectorDashboardHeader(
 );
 
 renderDashboardLogoutAction();
-renderDirectorSubnav('review', $pendingCount);
+renderDirectorSubnav('review', $pendingCount, $draftCount);
 ?>
 
 <div class="director-review-page">

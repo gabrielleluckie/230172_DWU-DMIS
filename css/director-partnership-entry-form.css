@@ -142,3 +142,97 @@ body.app-shell .director-entry-form-shell input[type="file"] {
 body.app-shell .director-entry-form-shell input[type="file"]::file-selector-button {
     color: #ffffff;
 }
+
+.director-drafts-panel {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    overflow: hidden;
+}
+
+.director-drafts-body {
+    padding: 1rem 1.25rem 1.25rem;
+}
+
+.director-drafts-empty {
+    margin: 0;
+    color: #64748b;
+    font-size: 0.9rem;
+}
+
+.director-drafts-list {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.director-draft-item {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.75rem 1rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.65rem;
+    background: #f8fafc;
+}
+
+.director-draft-item.is-editing {
+    border-color: #006633;
+    background: #f0fdf4;
+}
+
+.director-draft-item h3 {
+    margin: 0;
+    font-size: 0.98rem;
+}
+
+.director-draft-item h3 a {
+    color: #064e3b;
+    text-decoration: none;
+}
+
+.director-draft-meta,
+.director-draft-date {
+    margin: 0.2rem 0 0;
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.director-draft-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.director-draft-badge {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    background: #e2e8f0;
+    color: #334155;
+}
+
+.director-draft-btn {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #0f172a;
+    border-radius: 0.5rem;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.director-draft-btn-danger {
+    color: #9f1239;
+    border-color: #fecdd3;
+}
+
+.director-draft-delete {
+    margin: 0;
+}

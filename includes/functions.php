@@ -189,6 +189,8 @@ function fetchCampuses(PDO $pdo): array
 
 function fetchPartners(PDO $pdo): array
 {
+    ensureAgreementEntryColumns($pdo);
+
     $partnerTable = partnerTableName($pdo);
     $campusTable = campusTableName($pdo);
 
@@ -198,9 +200,25 @@ function fetchPartners(PDO $pdo): array
 
     $deletedFilter = partnerHasSoftDelete($pdo) ? ' WHERE p.Is_Deleted = 0' : '';
 
-    $sql = "SELECT p.Partner_ID, p.Name, p.Country, p.Website, c.Name AS campus_name, c.Campus_ID
+    $contactTable = contactTableName($pdo);
+    $contactSelect = 'NULL AS contact_email';
+    $contactJoin = '';
+
+    if ($contactTable !== null) {
+        $contactJoin = "LEFT JOIN (
+                            SELECT Partner_ID, MIN(Contact_ID) AS Contact_ID
+                            FROM `{$contactTable}`
+                            GROUP BY Partner_ID
+                        ) first_contact ON p.Partner_ID = first_contact.Partner_ID
+                        LEFT JOIN `{$contactTable}` ct ON ct.Contact_ID = first_contact.Contact_ID";
+        $contactSelect = 'ct.Email AS contact_email';
+    }
+
+    $sql = "SELECT p.Partner_ID, p.Name, p.Country, p.Website, p.Address,
+                   p.Mailing_Address, c.Name AS campus_name, c.Campus_ID, {$contactSelect}
             FROM `{$partnerTable}` p
-            INNER JOIN `{$campusTable}` c ON p.Campus_ID = c.Campus_ID{$deletedFilter}
+            INNER JOIN `{$campusTable}` c ON p.Campus_ID = c.Campus_ID
+            {$contactJoin}{$deletedFilter}
             ORDER BY p.Name ASC";
 
     return $pdo->query($sql)->fetchAll();
@@ -635,6 +653,7 @@ function createAgreementWithHistory(
         'partner_mode'        => 'existing',
         'partner_id'          => $partnerId,
         'campus_id'           => (int) $partner['Campus_ID'],
+        'agreement_title'     => $agreementType,
         'partnership_type'    => $partnershipType,
         'agreement_type'      => $agreementType,
         'signed_date'         => $signedDate,
@@ -690,6 +709,15 @@ function registerActivePartnership(
     $contactEmail = trim((string) ($data['contact_email'] ?? ''));
     $contactPhone = trim((string) ($data['contact_phone'] ?? ''));
     $contactFax = trim((string) ($data['contact_fax'] ?? ''));
+    $agreementTitle = trim((string) ($data['agreement_title'] ?? ''));
+    $physicalAddress = trim((string) ($data['physical_address'] ?? $data['partner_address'] ?? ''));
+    $mailingAddress = trim((string) ($data['mailing_address'] ?? ''));
+    $partnerEmail = trim((string) ($data['partner_email'] ?? $contactEmail));
+    $directorEmail = trim((string) ($data['director_email'] ?? ''));
+
+    if ($contactEmail === '' && $partnerEmail !== '') {
+        $contactEmail = $partnerEmail;
+    }
 
     if ($directorUserId <= 0) {
         throw new InvalidArgumentException('A valid director session is required to register agreements.');
@@ -697,6 +725,14 @@ function registerActivePartnership(
 
     if ($campusId <= 0) {
         throw new InvalidArgumentException('Please select the managing DWU campus.');
+    }
+
+    if ($agreementTitle === '') {
+        $agreementTitle = $agreementType;
+    }
+
+    if ($agreementTitle === '') {
+        throw new InvalidArgumentException('Agreement title is required.');
     }
 
     if ($partnershipType === '' || $agreementType === '' || $signedDate === '' || $expiryDate === '') {
@@ -736,7 +772,7 @@ function registerActivePartnership(
     if ($partnerMode === 'new') {
         $partnerName = trim((string) ($data['partner_name'] ?? ''));
         $partnerCountry = trim((string) ($data['partner_country'] ?? ''));
-        $partnerAddress = trim((string) ($data['partner_address'] ?? ''));
+        $partnerAddress = $physicalAddress !== '' ? $physicalAddress : trim((string) ($data['partner_address'] ?? ''));
         $partnerWebsite = trim((string) ($data['partner_website'] ?? ''));
 
         if ($partnerName === '' || $partnerCountry === '') {
@@ -749,7 +785,8 @@ function registerActivePartnership(
             $partnerName,
             $partnerCountry,
             $partnerAddress,
-            $partnerWebsite
+            $partnerWebsite,
+            $mailingAddress
         );
     } else {
         $partnerId = (int) ($data['partner_id'] ?? 0);
@@ -786,15 +823,18 @@ function registerActivePartnership(
         );
 
         ensureAgreementAccessTokenColumn($pdo);
+        ensureAgreementEntryColumns($pdo);
         $accessToken = generateUniqueAgreementAccessToken($pdo);
 
         $insertAgreement = $pdo->prepare(
             "INSERT INTO `{$agreementTable}`
                 (Partner_ID, Campus_ID, Submitted_By, Reviewed_By, Partnership_Type, Agreement_Type,
-                 Scope_Description, Status, Signed_Date, Expiry_Date, Document_Path, access_token)
+                 Agreement_Title, Scope_Description, Physical_Address, Mailing_Address, Partner_Email,
+                 Director_Email, Status, Signed_Date, Expiry_Date, Document_Path, access_token)
              VALUES
                 (:partner_id, :campus_id, :submitted_by, :reviewed_by, :partnership_type, :agreement_type,
-                 :scope_description, :status, :signed_date, :expiry_date, :document_path, :access_token)"
+                 :agreement_title, :scope_description, :physical_address, :mailing_address, :partner_email,
+                 :director_email, :status, :signed_date, :expiry_date, :document_path, :access_token)"
         );
 
         $insertAgreement->execute([
@@ -804,7 +844,12 @@ function registerActivePartnership(
             'reviewed_by'        => $directorUserId,
             'partnership_type'   => $partnershipType,
             'agreement_type'     => $agreementType,
+            'agreement_title'    => $agreementTitle,
             'scope_description'  => $scopeDescription !== '' ? $scopeDescription : null,
+            'physical_address'   => $physicalAddress !== '' ? $physicalAddress : null,
+            'mailing_address'    => $mailingAddress !== '' ? $mailingAddress : null,
+            'partner_email'      => $partnerEmail !== '' ? $partnerEmail : null,
+            'director_email'     => $directorEmail !== '' ? $directorEmail : null,
             'status'             => Agreement::STATUS_ACTIVE,
             'signed_date'        => $signedDate,
             'expiry_date'        => $expiryDate,
@@ -863,10 +908,12 @@ function registerActivePartnership(
 
         $pdo->commit();
 
-        $directorEmail = fetchUserEmailById($pdo, $directorUserId);
+        if ($directorEmail === '') {
+            $directorEmail = fetchUserEmailById($pdo, $directorUserId);
+        }
 
         try {
-            sendNewAgreementRegisteredEmail($pdo, $agreementId, $contactEmail, $directorEmail);
+            sendNewAgreementRegisteredEmail($pdo, $agreementId, $partnerEmail, $directorEmail);
         } catch (Throwable $mailException) {
             error_log('New agreement notification failed for #' . $agreementId . ': ' . $mailException->getMessage());
         }
@@ -884,7 +931,8 @@ function createPartnerRecord(
     string $name,
     string $country,
     string $address = '',
-    string $website = ''
+    string $website = '',
+    string $mailingAddress = ''
 ): int {
     $partnerTable = partnerTableName($pdo);
 
@@ -905,6 +953,12 @@ function createPartnerRecord(
         $fields[] = 'Address';
         $values[] = ':address';
         $params['address'] = $address !== '' ? $address : null;
+    }
+
+    if (in_array('Mailing_Address', $columns, true)) {
+        $fields[] = 'Mailing_Address';
+        $values[] = ':mailing_address';
+        $params['mailing_address'] = $mailingAddress !== '' ? $mailingAddress : null;
     }
 
     if (in_array('Website', $columns, true)) {
@@ -1650,5 +1704,356 @@ function migrateLegacySessionProposalDraft(array $user): void
     unset($_SESSION['proposal_drafts'][$key]);
     if (empty($_SESSION['proposal_drafts'])) {
         unset($_SESSION['proposal_drafts']);
+    }
+}
+
+function directorAgreementDraftTableName(PDO $pdo): string
+{
+    static $ensured = false;
+    $table = 'agreement_draft';
+
+    if ($ensured) {
+        return $table;
+    }
+
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS `{$table}` (
+            Draft_ID INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            User_ID INT NOT NULL,
+            Campus_ID INT NULL DEFAULT NULL,
+            Title VARCHAR(255) NOT NULL DEFAULT 'Untitled draft',
+            Partner_Name VARCHAR(255) NULL DEFAULT NULL,
+            Agreement_Type VARCHAR(255) NULL DEFAULT NULL,
+            Campus_Name VARCHAR(255) NULL DEFAULT NULL,
+            Form_Data LONGTEXT NOT NULL,
+            Created_At DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            Updated_At DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (Draft_ID),
+            KEY idx_agreement_draft_user (User_ID)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    $ensured = true;
+
+    return $table;
+}
+
+/** @return array<string, mixed> */
+function collectDirectorAgreementFormData(array $post, ?string $documentPath = null): array
+{
+    $data = [
+        'partner_mode'        => (string) ($post['partner_mode'] ?? 'existing'),
+        'partner_id'          => (int) ($post['partner_id'] ?? 0),
+        'partner_name'        => trim((string) ($post['partner_name'] ?? '')),
+        'partner_country'     => trim((string) ($post['partner_country'] ?? '')),
+        'partner_website'     => trim((string) ($post['partner_website'] ?? '')),
+        'campus_id'           => (int) ($post['campus_id'] ?? 0),
+        'contact_name'        => trim((string) ($post['contact_name'] ?? '')),
+        'contact_designation' => trim((string) ($post['contact_designation'] ?? '')),
+        'contact_email'       => trim((string) ($post['contact_email'] ?? '')),
+        'contact_phone'       => trim((string) ($post['contact_phone'] ?? '')),
+        'contact_fax'         => trim((string) ($post['contact_fax'] ?? '')),
+        'agreement_title'     => trim((string) ($post['agreement_title'] ?? '')),
+        'physical_address'    => trim((string) ($post['physical_address'] ?? '')),
+        'mailing_address'     => trim((string) ($post['mailing_address'] ?? '')),
+        'partner_email'       => trim((string) ($post['partner_email'] ?? '')),
+        'director_email'      => trim((string) ($post['director_email'] ?? '')),
+        'partnership_type'    => trim((string) ($post['partnership_type'] ?? '')),
+        'agreement_type'      => trim((string) ($post['agreement_type'] ?? '')),
+        'signed_date'         => trim((string) ($post['signed_date'] ?? '')),
+        'expiry_date'         => trim((string) ($post['expiry_date'] ?? '')),
+        'scope_description'   => trim((string) ($post['scope_description'] ?? '')),
+        'document_path'       => $documentPath,
+    ];
+
+    if ($data['document_path'] === null || $data['document_path'] === '') {
+        $existing = trim((string) ($post['existing_document_path'] ?? ''));
+        $data['document_path'] = $existing !== '' ? $existing : null;
+    }
+
+    return $data;
+}
+
+function directorAgreementDraftTitle(array $formData, PDO $pdo): string
+{
+    $title = trim((string) ($formData['agreement_title'] ?? ''));
+    if ($title !== '') {
+        return $title;
+    }
+
+    $partnerName = trim((string) ($formData['partner_name'] ?? ''));
+    if ($partnerName === '') {
+        $partnerId = (int) ($formData['partner_id'] ?? 0);
+        if ($partnerId > 0) {
+            $partnerTable = partnerTableName($pdo);
+            if ($partnerTable !== null) {
+                $stmt = $pdo->prepare("SELECT Name FROM `{$partnerTable}` WHERE Partner_ID = :id LIMIT 1");
+                $stmt->execute(['id' => $partnerId]);
+                $row = $stmt->fetch();
+                $partnerName = is_array($row) ? trim((string) ($row['Name'] ?? '')) : '';
+            }
+        }
+    }
+
+    return $partnerName !== '' ? $partnerName : 'Untitled draft';
+}
+
+function directorAgreementDraftPartnerName(array $formData, PDO $pdo): string
+{
+    $partnerName = trim((string) ($formData['partner_name'] ?? ''));
+    if ($partnerName !== '') {
+        return $partnerName;
+    }
+
+    $partnerId = (int) ($formData['partner_id'] ?? 0);
+    if ($partnerId <= 0) {
+        return '';
+    }
+
+    $partnerTable = partnerTableName($pdo);
+    if ($partnerTable === null) {
+        return '';
+    }
+
+    $stmt = $pdo->prepare("SELECT Name FROM `{$partnerTable}` WHERE Partner_ID = :id LIMIT 1");
+    $stmt->execute(['id' => $partnerId]);
+    $row = $stmt->fetch();
+
+    return is_array($row) ? trim((string) ($row['Name'] ?? '')) : '';
+}
+
+function directorAgreementDraftCampusName(array $formData, PDO $pdo): string
+{
+    $campusId = (int) ($formData['campus_id'] ?? 0);
+    if ($campusId <= 0) {
+        return '';
+    }
+
+    $campusTable = campusTableName($pdo);
+    $stmt = $pdo->prepare("SELECT Name FROM `{$campusTable}` WHERE Campus_ID = :id LIMIT 1");
+    $stmt->execute(['id' => $campusId]);
+    $row = $stmt->fetch();
+
+    return is_array($row) ? trim((string) ($row['Name'] ?? '')) : '';
+}
+
+/** @return array<string, mixed> */
+function formatDirectorAgreementDraftRow(array $row, bool $includeForm = false): array
+{
+    $form = [];
+    if ($includeForm) {
+        $decoded = json_decode((string) ($row['Form_Data'] ?? ''), true);
+        $form = is_array($decoded) ? $decoded : [];
+    }
+
+    return [
+        'id'             => (int) ($row['Draft_ID'] ?? 0),
+        'title'          => (string) ($row['Title'] ?? 'Untitled draft'),
+        'partner_name'   => (string) ($row['Partner_Name'] ?? ''),
+        'agreement_type' => (string) ($row['Agreement_Type'] ?? ''),
+        'campus'         => (string) ($row['Campus_Name'] ?? ''),
+        'saved_at'       => formatProposalDraftTimestamp($row['Updated_At'] ?? null),
+        'form'           => $form,
+    ];
+}
+
+/** @return list<array<string, mixed>> */
+function fetchDirectorAgreementDrafts(PDO $pdo, int $userId): array
+{
+    if ($userId <= 0) {
+        return [];
+    }
+
+    $table = directorAgreementDraftTableName($pdo);
+    $stmt = $pdo->prepare(
+        "SELECT Draft_ID, User_ID, Campus_ID, Title, Partner_Name, Agreement_Type, Campus_Name, Created_At, Updated_At
+         FROM `{$table}`
+         WHERE User_ID = :user_id
+         ORDER BY Updated_At DESC, Draft_ID DESC"
+    );
+    $stmt->execute(['user_id' => $userId]);
+
+    $drafts = [];
+    while ($row = $stmt->fetch()) {
+        $drafts[] = formatDirectorAgreementDraftRow($row);
+    }
+
+    return $drafts;
+}
+
+/** @return array<string, mixed>|null */
+function fetchDirectorAgreementDraftById(PDO $pdo, int $userId, int $draftId): ?array
+{
+    if ($userId <= 0 || $draftId <= 0) {
+        return null;
+    }
+
+    $table = directorAgreementDraftTableName($pdo);
+    $stmt = $pdo->prepare(
+        "SELECT Draft_ID, User_ID, Campus_ID, Title, Partner_Name, Agreement_Type, Campus_Name,
+                Form_Data, Created_At, Updated_At
+         FROM `{$table}`
+         WHERE Draft_ID = :draft_id AND User_ID = :user_id
+         LIMIT 1"
+    );
+    $stmt->execute([
+        'draft_id' => $draftId,
+        'user_id'  => $userId,
+    ]);
+    $row = $stmt->fetch();
+
+    return $row === false ? null : formatDirectorAgreementDraftRow($row, true);
+}
+
+function persistDirectorAgreementDraft(PDO $pdo, array $user, array $formData, ?int $draftId = null): int
+{
+    $userId = (int) ($user['id'] ?? 0);
+    if ($userId <= 0) {
+        throw new InvalidArgumentException('A valid director session is required to save a draft.');
+    }
+
+    unset($formData['action'], $formData['draft_id']);
+    $payload = json_encode($formData, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    $title = directorAgreementDraftTitle($formData, $pdo);
+    $partnerName = directorAgreementDraftPartnerName($formData, $pdo);
+    $agreementType = trim((string) ($formData['agreement_type'] ?? ''));
+    $campusName = directorAgreementDraftCampusName($formData, $pdo);
+    $campusId = (int) ($formData['campus_id'] ?? 0);
+    $campusId = $campusId > 0 ? $campusId : null;
+
+    $table = directorAgreementDraftTableName($pdo);
+
+    if ($draftId !== null && $draftId > 0) {
+        $existing = fetchDirectorAgreementDraftById($pdo, $userId, $draftId);
+        if ($existing !== null) {
+            $update = $pdo->prepare(
+                "UPDATE `{$table}`
+                 SET Title = :title,
+                     Partner_Name = :partner_name,
+                     Agreement_Type = :agreement_type,
+                     Campus_Name = :campus_name,
+                     Campus_ID = :campus_id,
+                     Form_Data = :form_data,
+                     Updated_At = NOW()
+                 WHERE Draft_ID = :draft_id AND User_ID = :user_id"
+            );
+            $update->execute([
+                'title'           => $title,
+                'partner_name'    => $partnerName !== '' ? $partnerName : null,
+                'agreement_type'  => $agreementType !== '' ? $agreementType : null,
+                'campus_name'     => $campusName !== '' ? $campusName : null,
+                'campus_id'       => $campusId,
+                'form_data'       => $payload,
+                'draft_id'        => $draftId,
+                'user_id'         => $userId,
+            ]);
+
+            return $draftId;
+        }
+    }
+
+    $insert = $pdo->prepare(
+        "INSERT INTO `{$table}`
+            (User_ID, Campus_ID, Title, Partner_Name, Agreement_Type, Campus_Name, Form_Data)
+         VALUES
+            (:user_id, :campus_id, :title, :partner_name, :agreement_type, :campus_name, :form_data)"
+    );
+    $insert->execute([
+        'user_id'         => $userId,
+        'campus_id'       => $campusId,
+        'title'           => $title,
+        'partner_name'    => $partnerName !== '' ? $partnerName : null,
+        'agreement_type'  => $agreementType !== '' ? $agreementType : null,
+        'campus_name'     => $campusName !== '' ? $campusName : null,
+        'form_data'       => $payload,
+    ]);
+
+    return (int) $pdo->lastInsertId();
+}
+
+function deleteDirectorAgreementDraft(PDO $pdo, int $userId, int $draftId): bool
+{
+    if ($userId <= 0 || $draftId <= 0) {
+        return false;
+    }
+
+    $table = directorAgreementDraftTableName($pdo);
+    $stmt = $pdo->prepare(
+        "DELETE FROM `{$table}` WHERE Draft_ID = :draft_id AND User_ID = :user_id"
+    );
+    $stmt->execute([
+        'draft_id' => $draftId,
+        'user_id'  => $userId,
+    ]);
+
+    return $stmt->rowCount() > 0;
+}
+
+function handleDirectorPartnershipEntryPost(PDO $pdo, array $user, string $returnPath): void
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        return;
+    }
+
+    $action = (string) ($_POST['action'] ?? '');
+    $draftId = (int) ($_POST['draft_id'] ?? 0);
+    $userId = (int) ($user['id'] ?? 0);
+
+    if ($action === 'delete_draft') {
+        if ($draftId > 0 && deleteDirectorAgreementDraft($pdo, $userId, $draftId)) {
+            setFlash('success', 'Draft deleted.');
+        } else {
+            setFlash('error', 'That draft could not be deleted.');
+        }
+
+        redirect($returnPath);
+    }
+
+    if ($action === 'save_draft') {
+        try {
+            $uploadedPath = storeUploadedAgreementPdf($_FILES['agreement_pdf'] ?? []);
+            $formData = collectDirectorAgreementFormData($_POST, $uploadedPath);
+            $savedId = persistDirectorAgreementDraft(
+                $pdo,
+                $user,
+                $formData,
+                $draftId > 0 ? $draftId : null
+            );
+            setFlash(
+                'success',
+                'Draft #' . $savedId . ' saved. You can enter another agreement now, or open Saved Drafts later to edit and register it.'
+            );
+        } catch (Throwable $exception) {
+            setFlash('error', $exception->getMessage());
+            if ($draftId > 0) {
+                redirect($returnPath . (str_contains($returnPath, '?') ? '&' : '?') . 'draft=' . $draftId);
+            }
+        }
+
+        redirect($returnPath);
+    }
+
+    if ($action === 'register_agreement') {
+        try {
+            $uploadedPath = storeUploadedAgreementPdf($_FILES['agreement_pdf'] ?? []);
+            $formData = collectDirectorAgreementFormData($_POST, $uploadedPath);
+            $agreementId = registerActivePartnership($pdo, $formData, $userId, (string) ($user['name'] ?? ''));
+
+            if ($draftId > 0) {
+                deleteDirectorAgreementDraft($pdo, $userId, $draftId);
+            }
+
+            setFlash(
+                'success',
+                'Agreement #' . $agreementId . ' registered successfully. Notification emails were sent to the partner and director with a secure access link.'
+            );
+        } catch (Throwable $exception) {
+            setFlash('error', $exception->getMessage());
+            if ($draftId > 0) {
+                redirect($returnPath . (str_contains($returnPath, '?') ? '&' : '?') . 'draft=' . $draftId);
+            }
+        }
+
+        redirect($returnPath);
     }
 }

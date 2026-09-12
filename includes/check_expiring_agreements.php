@@ -3,10 +3,13 @@
 declare(strict_types=1);
 
 /**
- * Daily expiry notifier — Active agreements ending in exactly 30 days.
+ * Daily expiry notifier — Active / Expiring Soon agreements within 30 days.
  *
  * Cron example:
  *   0 7 * * * php C:/xampp/htdocs/IS406_PartnershipRegistry/includes/check_expiring_agreements.php
+ *
+ * On this XAMPP install the director dashboard also runs the check about once an hour
+ * so emails still go out when Windows Task Scheduler is not configured.
  */
 
 use PHPMailer\PHPMailer\Exception;
@@ -16,10 +19,10 @@ require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/agreement_notify.php';
 
 const EXPIRY_NOTIFY_FROM_ADDRESS = 'gabrielleluckie20@gmail.com';
-const EXPIRY_NOTIFY_FROM_NAME = 'DWU Partnership Registry';
+const EXPIRY_NOTIFY_FROM_NAME = 'DWU Partnership Office';
 const EXPIRY_NOTIFY_SMTP_HOST = 'smtp.gmail.com';
 const EXPIRY_NOTIFY_SMTP_USER = 'gabrielleluckie20@gmail.com';
-const EXPIRY_NOTIFY_SMTP_PASSWORD = 'motd uyeq fwfj nidb';
+const EXPIRY_NOTIFY_SMTP_PASSWORD = 'dsov lmqw prze zebv';
 const EXPIRY_NOTIFY_SMTP_PORT = 587;
 const EXPIRY_NOTIFY_SMTP_SECURE = 'tls';
 const EXPIRY_NOTIFY_DAYS = 30;
@@ -171,7 +174,7 @@ function runExpiringAgreementCheck(PDO $pdo): array
     $result['found'] = count($agreements);
 
     if ($agreements === []) {
-        $result['message'] = 'No agreements expiring in 30 days.';
+        $result['message'] = 'No agreements expiring within 30 days.';
         expiryNotifyPrint($result['message'], 'info');
 
         return $result;
@@ -192,19 +195,15 @@ function runExpiringAgreementCheck(PDO $pdo): array
     foreach ($agreements as $agreement) {
         $title = agreementNotificationTitle($agreement);
         $partnerEmail = trim((string) ($agreement['partner_email'] ?? ''));
-        $directorEmail = trim((string) ($agreement['director_email'] ?? ''));
-
-        $mail->clearAddresses();
+        $directorEmail = resolveDirectorNotifyEmail((string) ($agreement['director_email'] ?? ''));
 
         $recipients = [];
 
-        if (filter_var($partnerEmail, FILTER_VALIDATE_EMAIL)) {
-            $mail->addAddress($partnerEmail);
+        if (isDeliverableNotifyEmail($partnerEmail)) {
             $recipients[] = $partnerEmail;
         }
 
-        if (filter_var($directorEmail, FILTER_VALIDATE_EMAIL) && strcasecmp($directorEmail, $partnerEmail) !== 0) {
-            $mail->addAddress($directorEmail);
+        if ($directorEmail !== '' && strcasecmp($directorEmail, $partnerEmail) !== 0) {
             $recipients[] = $directorEmail;
         }
 
@@ -223,27 +222,30 @@ function runExpiringAgreementCheck(PDO $pdo): array
             ? agreementPublicViewUrl($accessToken)
             : '';
 
-        $mail->Subject = 'URGENT: Partnership Agreement Expiring in 30 Days';
-        $mail->Body    = buildExpiryNoticeHtml($agreement, (string) ($agreement['expiry_date'] ?? $targetDate), $viewUrl);
+        $daysRemaining = (int) ($agreement['days_remaining'] ?? EXPIRY_NOTIFY_DAYS);
+        $daysLabel = $daysRemaining === 1 ? '1 day' : $daysRemaining . ' days';
+        $mail->Subject = 'URGENT: Partnership Agreement Expiring in ' . $daysLabel;
+        $mail->Body    = buildExpiryNoticeHtml(
+            $agreement,
+            (string) ($agreement['expiry_date'] ?? $targetDate),
+            $viewUrl,
+            $daysRemaining
+        );
         $mail->AltBody = trim(html_entity_decode(strip_tags($mail->Body), ENT_QUOTES, 'UTF-8'));
 
-        $result['emails_attempted']++;
+        $result['emails_attempted'] += count($recipients);
+        $delivery = sendPdmisMailToRecipients($mail, $recipients);
+        $result['emails_sent'] += $delivery['sent'];
 
-        try {
-            $mail->send();
-            $result['emails_sent']++;
+        if ($delivery['sent'] > 0) {
+            markExpiryAlertSent($pdo, $agreeId);
             expiryNotifyPrint(
-                'SUCCESS: Email sent for agreement: ' . $title . ' (' . implode(', ', $recipients) . ')',
+                'SUCCESS: Email sent for agreement: ' . $title . ' (' . implode(', ', $delivery['recipients']) . ')',
                 'success'
             );
-        } catch (Exception $e) {
-            $error = $mail->ErrorInfo !== '' ? $mail->ErrorInfo : $e->getMessage();
-            $result['errors'][] = $error;
-            expiryNotifyLogError('Email failed for agreement "' . $title . '": ' . $error);
-        } catch (Throwable $e) {
-            $error = (isset($mail->ErrorInfo) && $mail->ErrorInfo !== '')
-                ? $mail->ErrorInfo
-                : $e->getMessage();
+        }
+
+        foreach ($delivery['errors'] as $error) {
             $result['errors'][] = $error;
             expiryNotifyLogError('Email failed for agreement "' . $title . '": ' . $error);
         }
@@ -252,7 +254,7 @@ function runExpiringAgreementCheck(PDO $pdo): array
     $result['ok'] = $result['emails_sent'] > 0 && $result['errors'] === [];
     $result['message'] = $result['ok']
         ? sprintf(
-            'Sent %d of %d expiry notification(s) for %d agreement(s) expiring on %s.',
+            'Sent %d of %d expiry notification(s) for %d agreement(s) expiring within 30 days (on or before %s).',
             $result['emails_sent'],
             $result['emails_attempted'],
             $result['found'],
@@ -287,8 +289,11 @@ function fetchAgreementsExpiringInThirtyDays(PDO $pdo): array
         throw new RuntimeException('Agreement or partner table was not found.');
     }
 
+    ensureAgreementAccessTokenColumn($pdo);
+    ensureAgreementEntryColumns($pdo);
+
     $contactJoin = '';
-    $contactSelect = 'NULL AS partner_email';
+    $partnerEmailSelect = 'a.Partner_Email AS partner_email';
 
     if ($contactTable !== null) {
         $contactJoin = "LEFT JOIN (
@@ -297,14 +302,15 @@ function fetchAgreementsExpiringInThirtyDays(PDO $pdo): array
                             GROUP BY Partner_ID
                         ) first_contact ON p.Partner_ID = first_contact.Partner_ID
                         LEFT JOIN `{$contactTable}` ct ON ct.Contact_ID = first_contact.Contact_ID";
-        $contactSelect = 'ct.Email AS partner_email';
+        $partnerEmailSelect = 'COALESCE(NULLIF(a.Partner_Email, \'\'), ct.Email) AS partner_email';
     }
 
     $directorJoin = '';
-    $directorSelect = 'NULL AS director_email';
+    $directorSelect = 'a.Director_Email AS director_email';
 
     if ($usersTable !== null) {
         $directorJoin = "LEFT JOIN `{$usersTable}` reviewed_director ON reviewed_director.User_ID = a.Reviewed_By
+                        LEFT JOIN `{$usersTable}` submitted_director ON submitted_director.User_ID = a.Submitted_By
                         LEFT JOIN (
                             SELECT Email
                             FROM `{$usersTable}`
@@ -312,27 +318,31 @@ function fetchAgreementsExpiringInThirtyDays(PDO $pdo): array
                             ORDER BY User_ID ASC
                             LIMIT 1
                         ) office_director ON 1 = 1";
-        $directorSelect = 'COALESCE(reviewed_director.Email, office_director.Email) AS director_email';
+        $directorSelect = 'COALESCE(NULLIF(a.Director_Email, \'\'), reviewed_director.Email, submitted_director.Email, office_director.Email) AS director_email';
     }
 
-    ensureAgreementAccessTokenColumn($pdo);
+    $alertFilter = expiryAlertUnsentSql($pdo, $agreementTable);
 
     $sql = "SELECT
                 a.Agree_ID AS id,
-                a.Agreement_Type AS title,
+                COALESCE(NULLIF(a.Agreement_Title, ''), a.Agreement_Type) AS title,
                 p.Name AS partner_name,
-                {$contactSelect},
+                {$partnerEmailSelect},
                 {$directorSelect},
                 a.Expiry_Date AS expiry_date,
+                DATEDIFF(a.Expiry_Date, CURDATE()) AS days_remaining,
                 a.Status AS status,
                 a.access_token
             FROM `{$agreementTable}` a
             INNER JOIN `{$partnerTable}` p ON a.Partner_ID = p.Partner_ID
             {$contactJoin}
             {$directorJoin}
-            WHERE DATE(a.Expiry_Date) = DATE_ADD(CURDATE(), INTERVAL 30 DAY)
-              AND a.Status = 'Active'
-            ORDER BY p.Name ASC, a.Agree_ID ASC";
+            WHERE a.Expiry_Date IS NOT NULL
+              AND DATE(a.Expiry_Date) BETWEEN DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                                          AND DATE_ADD(CURDATE(), INTERVAL " . EXPIRY_NOTIFY_DAYS . " DAY)
+              AND a.Status IN ('Active', 'Expiring Soon')
+              {$alertFilter}
+            ORDER BY a.Expiry_Date ASC, p.Name ASC, a.Agree_ID ASC";
 
     return $pdo->query($sql)->fetchAll();
 }
@@ -365,6 +375,81 @@ function expiryNotificationTableNames(PDO $pdo): array
     ];
 }
 
+function expiryAlertUnsentSql(PDO $pdo, string $agreementTable): string
+{
+    $columns = $pdo->query("SHOW COLUMNS FROM `{$agreementTable}`")->fetchAll(PDO::FETCH_COLUMN);
+
+    if (!in_array('Expiry_Alert_Sent_At', $columns, true)) {
+        return '';
+    }
+
+    return 'AND a.Expiry_Alert_Sent_At IS NULL';
+}
+
+function markExpiryAlertSent(PDO $pdo, int $agreeId): void
+{
+    if ($agreeId <= 0) {
+        return;
+    }
+
+    $tables = expiryNotificationTableNames($pdo);
+    $table = $tables['agreement'];
+
+    if ($table === null) {
+        return;
+    }
+
+    $columns = $pdo->query("SHOW COLUMNS FROM `{$table}`")->fetchAll(PDO::FETCH_COLUMN);
+    $sets = ["Status = 'Expiring Soon'"];
+
+    if (in_array('Expiry_Alert_Sent_At', $columns, true)) {
+        $sets[] = 'Expiry_Alert_Sent_At = NOW()';
+    }
+
+    $pdo->prepare(
+        'UPDATE `' . $table . '` SET ' . implode(', ', $sets) . ' WHERE Agree_ID = :id'
+    )->execute(['id' => $agreeId]);
+}
+
+function maybeDispatchExpiringAgreementNotices(PDO $pdo): void
+{
+    static $ran = false;
+
+    if ($ran) {
+        return;
+    }
+
+    $ran = true;
+
+    $lockDir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'logs';
+    $lockFile = $lockDir . DIRECTORY_SEPARATOR . 'expiry_notify_last_run.txt';
+
+    if (!is_dir($lockDir)) {
+        @mkdir($lockDir, 0775, true);
+    }
+
+    $now = time();
+
+    if (is_file($lockFile)) {
+        $last = (int) trim((string) @file_get_contents($lockFile));
+
+        if ($last > 0 && ($now - $last) < 3600) {
+            return;
+        }
+    }
+
+    if (!defined('EXPIRY_NOTIFY_PRINT_RESULTS')) {
+        define('EXPIRY_NOTIFY_PRINT_RESULTS', false);
+    }
+
+    try {
+        runExpiringAgreementCheck($pdo);
+        @file_put_contents($lockFile, (string) $now);
+    } catch (Throwable $exception) {
+        expiryNotifyLogError($exception->getMessage());
+    }
+}
+
 function expiryNotifyEscape(string $value): string
 {
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
@@ -394,12 +479,15 @@ function agreementNotificationTitle(array $agreement): string
     return $id > 0 ? 'Partnership Agreement #' . $id : 'Partnership Agreement';
 }
 
-function buildExpiryNoticeHtml(array $agreement, string $targetDate, string $viewUrl = ''): string
+function buildExpiryNoticeHtml(array $agreement, string $targetDate, string $viewUrl = '', int $daysRemaining = EXPIRY_NOTIFY_DAYS): string
 {
     $title = expiryNotifyEscape(agreementNotificationTitle($agreement));
     $partner = expiryNotifyEscape((string) ($agreement['partner_name'] ?? '—'));
     $expiry = expiryNotifyEscape(formatExpiryNotifyDate((string) ($agreement['expiry_date'] ?? $targetDate)));
     $safeUrl = expiryNotifyEscape($viewUrl);
+    $daysRemaining = max(1, $daysRemaining);
+    $daysLabel = $daysRemaining === 1 ? '1 day' : $daysRemaining . ' days';
+    $daysLabelEscaped = expiryNotifyEscape($daysLabel);
     $accessButton = $viewUrl !== ''
         ? <<<HTML
                             <p style="margin:22px 0 0;text-align:center;">
@@ -407,7 +495,10 @@ function buildExpiryNoticeHtml(array $agreement, string $targetDate, string $vie
                                     View Partnership Agreement
                                 </a>
                             </p>
-                            <p style="margin:16px 0 0;font-size:12px;line-height:1.5;color:#64748b;word-break:break-all;">
+                            <p style="margin:16px 0 0;font-size:12px;line-height:1.5;color:#64748b;">
+                                Open this link on the computer running XAMPP (Apache must be started).
+                            </p>
+                            <p style="margin:10px 0 0;font-size:12px;line-height:1.5;color:#64748b;word-break:break-all;">
                                 Secure access link: {$safeUrl}
                             </p>
 HTML
@@ -435,9 +526,9 @@ HTML
                     </tr>
                     <tr>
                         <td style="padding:28px;">
-                            <h2 style="margin:0 0 12px;font-size:18px;color:#064e3b;">URGENT: Partnership Agreement Expiring in 30 Days</h2>
+                            <h2 style="margin:0 0 12px;font-size:18px;color:#064e3b;">URGENT: Partnership Agreement Expiring in {$daysLabelEscaped}</h2>
                             <p style="margin:0 0 16px;font-size:15px;line-height:1.55;color:#0f172a;">
-                                This is a notice that a partnership agreement is expiring in 30 days.
+                                This is a notice that a partnership agreement is expiring in {$daysLabelEscaped}.
                             </p>
                             <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #d1fae5;border-radius:8px;overflow:hidden;">
                                 <tr>
@@ -451,6 +542,10 @@ HTML
                                 <tr>
                                     <td style="background:#ecfdf5;padding:10px 12px;font-size:13px;font-weight:bold;color:#064e3b;">Expiration date</td>
                                     <td style="padding:10px 12px;font-size:14px;color:#0f172a;">{$expiry}</td>
+                                </tr>
+                                <tr>
+                                    <td style="background:#ecfdf5;padding:10px 12px;width:42%;font-size:13px;font-weight:bold;color:#064e3b;">Days remaining</td>
+                                    <td style="padding:10px 12px;font-size:14px;color:#0f172a;">{$daysLabelEscaped}</td>
                                 </tr>
                             </table>
                             {$accessButton}
@@ -492,36 +587,40 @@ function configureExpiryPhpMailer(object $mail): void
 {
     $mail->isSMTP();
     $mail->Host       = EXPIRY_NOTIFY_SMTP_HOST;
-    $mail->Port       = EXPIRY_NOTIFY_SMTP_PORT;
-    $mail->SMTPSecure = EXPIRY_NOTIFY_SMTP_SECURE;
     $mail->SMTPAuth   = true;
     $mail->Username   = EXPIRY_NOTIFY_SMTP_USER;
     $mail->Password   = EXPIRY_NOTIFY_SMTP_PASSWORD;
+    $mail->SMTPSecure = class_exists(PHPMailer::class)
+        ? PHPMailer::ENCRYPTION_STARTTLS
+        : EXPIRY_NOTIFY_SMTP_SECURE;
+    $mail->Port       = EXPIRY_NOTIFY_SMTP_PORT;
     $mail->setFrom(EXPIRY_NOTIFY_FROM_ADDRESS, EXPIRY_NOTIFY_FROM_NAME);
     $mail->isHTML(true);
 }
 
-try {
-    $expiryNotificationResult = runExpiringAgreementCheck($pdo);
-} catch (Throwable $e) {
-    $expiryNotificationResult = [
-        'ok'               => false,
-        'message'          => $e->getMessage(),
-        'target_date'      => '',
-        'found'            => 0,
-        'emails_attempted' => 0,
-        'emails_sent'      => 0,
-        'via'              => '',
-        'agreements'       => [],
-        'errors'           => [$e->getMessage()],
-    ];
-    expiryNotifyLogError($e->getMessage());
+if (!defined('EXPIRY_NOTIFY_SKIP_AUTORUN')) {
+    try {
+        $expiryNotificationResult = runExpiringAgreementCheck($pdo);
+    } catch (Throwable $e) {
+        $expiryNotificationResult = [
+            'ok'               => false,
+            'message'          => $e->getMessage(),
+            'target_date'      => '',
+            'found'            => 0,
+            'emails_attempted' => 0,
+            'emails_sent'      => 0,
+            'via'              => '',
+            'agreements'       => [],
+            'errors'           => [$e->getMessage()],
+        ];
+        expiryNotifyLogError($e->getMessage());
+    }
 }
 
 $runningThisFile = isset($_SERVER['SCRIPT_FILENAME'])
     && realpath((string) $_SERVER['SCRIPT_FILENAME']) === realpath(__FILE__);
 
-if (PHP_SAPI === 'cli' && $runningThisFile) {
+if (PHP_SAPI === 'cli' && $runningThisFile && isset($expiryNotificationResult) && is_array($expiryNotificationResult)) {
     fwrite(
         $expiryNotificationResult['ok'] ? STDOUT : STDERR,
         $expiryNotificationResult['message'] . PHP_EOL

@@ -142,6 +142,34 @@ body.app-shell .table-dark {
     --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
 }
 
+body.app-shell .registry-status-text {
+    display: inline;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    font-size: inherit;
+    font-weight: 500;
+    line-height: inherit;
+}
+
+body.app-shell .registry-status-text.is-active {
+    color: #198754;
+}
+
+body.app-shell .registry-status-text.is-soon {
+    color: #b8860b;
+}
+
+body.app-shell .registry-status-text.is-expired {
+    color: #dc3545;
+}
+
+body.app-shell .registry-status-text.is-other {
+    color: #6c757d;
+}
+
 body.app-shell .registry-detail {
     width: max-content;
     max-width: 100%;

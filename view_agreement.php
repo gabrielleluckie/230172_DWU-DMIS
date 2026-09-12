@@ -17,7 +17,7 @@ if (!function_exists('e')) {
     }
 }
 
-$token = trim((string) ($_GET['token'] ?? ''));
+$token = normalizeAgreementAccessToken((string) ($_GET['token'] ?? ''));
 $agreement = null;
 
 try {
@@ -74,8 +74,10 @@ $scope = trim((string) ($agreement['scope'] ?? ''));
                 <div class="partner-view-error">
                     <h2>Invalid or Expired Link</h2>
                     <p>
-                        This secure partnership link is not valid. The token may be missing, incorrect, or no longer active.
-                        Please contact the DWU Partnership Division if you need a new access link.
+                        This page needs the full address from your email, including
+                        <code>?token=</code> and the long code after it.
+                        If you opened the page without that code, or the email broke the link onto two lines, the token will not match.
+                        Copy the complete link and paste it into the browser on the computer running XAMPP.
                     </p>
                 </div>
             <?php else: ?>
@@ -92,6 +94,15 @@ $scope = trim((string) ($agreement['scope'] ?? ''));
 
                     <div class="partner-view-label">Partner</div>
                     <div class="partner-view-value"><?= e((string) ($agreement['partner_name'] ?? '—')) ?></div>
+
+                    <div class="partner-view-label">Physical address</div>
+                    <div class="partner-view-value"><?= e(trim((string) ($agreement['physical_address'] ?? '')) !== '' ? (string) $agreement['physical_address'] : '—') ?></div>
+
+                    <div class="partner-view-label">Mailing address</div>
+                    <div class="partner-view-value"><?= e(trim((string) ($agreement['mailing_address'] ?? '')) !== '' ? (string) $agreement['mailing_address'] : '—') ?></div>
+
+                    <div class="partner-view-label">Partner email</div>
+                    <div class="partner-view-value"><?= e(trim((string) ($agreement['partner_email'] ?? '')) !== '' ? (string) $agreement['partner_email'] : '—') ?></div>
 
                     <div class="partner-view-label">Signed date</div>
                     <div class="partner-view-value"><?= e(formatAgreementNotifyDate((string) ($agreement['signed_date'] ?? ''))) ?></div>

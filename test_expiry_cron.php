@@ -108,8 +108,8 @@ function h(?string $value): string
             <h2 style="margin:0 0 0.75rem;font-size:1.05rem;color:#064e3b;">Matching active agreements</h2>
             <?php if ($agreements === []): ?>
                 <p style="margin:0;color:#475569;">
-                    None. Set an Active agreement’s <code>Expiry_Date</code> to
-                    <code><?= h((string) $result['target_date']) ?></code> and refresh this page.
+                    None. Active or Expiring Soon agreements with 1–30 days remaining
+                    and no previous expiry email will appear here.
                 </p>
             <?php else: ?>
                 <table>
@@ -121,6 +121,7 @@ function h(?string $value): string
                             <th>Partner email</th>
                             <th>Director email</th>
                             <th>Expiration date</th>
+                            <th>Days left</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -132,6 +133,7 @@ function h(?string $value): string
                                 <td><?= h((string) ($agreement['partner_email'] ?? '')) ?></td>
                                 <td><?= h((string) ($agreement['director_email'] ?? '')) ?></td>
                                 <td><?= h((string) ($agreement['expiry_date'] ?? '')) ?></td>
+                                <td><?= h((string) ($agreement['days_remaining'] ?? '')) ?></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>

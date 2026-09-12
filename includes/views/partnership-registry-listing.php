@@ -166,7 +166,7 @@ $listCampus = (int) ($filterCampus ?? 0);
                                 </div>
                             </td>
                             <td>
-                                <span class="badge rounded-pill registry-status-badge <?= statusBadgeClasses($agreement['status']) ?>">
+                                <span class="registry-status-text <?= statusBadgeClasses($agreement['status']) ?>">
                                     <?= e($agreement['status']) ?>
                                 </span>
                             </td>

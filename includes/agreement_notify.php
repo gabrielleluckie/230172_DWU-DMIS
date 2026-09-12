@@ -12,12 +12,17 @@ use PHPMailer\PHPMailer\PHPMailer;
 
 if (!defined('PDMIS_MAIL_FROM_ADDRESS')) {
     define('PDMIS_MAIL_FROM_ADDRESS', 'gabrielleluckie20@gmail.com');
-    define('PDMIS_MAIL_FROM_NAME', 'DWU Partnership Registry');
+    define('PDMIS_MAIL_FROM_NAME', 'DWU Partnership Office');
     define('PDMIS_MAIL_SMTP_HOST', 'smtp.gmail.com');
     define('PDMIS_MAIL_SMTP_USER', 'gabrielleluckie20@gmail.com');
-    define('PDMIS_MAIL_SMTP_PASSWORD', 'motd uyeq fwfj nidb');
+    define('PDMIS_MAIL_SMTP_PASSWORD', 'dsov lmqw prze zebv');
     define('PDMIS_MAIL_SMTP_PORT', 587);
     define('PDMIS_MAIL_SMTP_SECURE', 'tls');
+}
+
+if (!defined('PDMIS_DIRECTOR_NOTIFY_EMAIL')) {
+    // dwu.ac.pg student addresses are not reachable via Gmail SMTP.
+    define('PDMIS_DIRECTOR_NOTIFY_EMAIL', 'gabrielleluckie20@gmail.com');
 }
 
 function agreementNotifyTableName(PDO $pdo): string
@@ -63,6 +68,48 @@ function ensureAgreementAccessTokenColumn(PDO $pdo): void
 
     if ($indexes === []) {
         $pdo->exec("ALTER TABLE `{$table}` ADD UNIQUE KEY uq_agreement_access_token (access_token)");
+    }
+
+    $ensured = true;
+}
+
+function ensureAgreementEntryColumns(PDO $pdo): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    $agreementTable = agreementNotifyTableName($pdo);
+    $agreementColumns = $pdo->query("SHOW COLUMNS FROM `{$agreementTable}`")->fetchAll(PDO::FETCH_COLUMN);
+
+    $agreementAdds = [
+        'Agreement_Title'  => 'VARCHAR(255) NULL DEFAULT NULL',
+        'Physical_Address' => 'TEXT NULL DEFAULT NULL',
+        'Mailing_Address'  => 'TEXT NULL DEFAULT NULL',
+        'Partner_Email'    => 'VARCHAR(150) NULL DEFAULT NULL',
+        'Director_Email'   => 'VARCHAR(150) NULL DEFAULT NULL',
+    ];
+
+    foreach ($agreementAdds as $column => $definition) {
+        if (!in_array($column, $agreementColumns, true)) {
+            $pdo->exec("ALTER TABLE `{$agreementTable}` ADD COLUMN `{$column}` {$definition}");
+        }
+    }
+
+    $tables = $pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
+    $lower = array_map('strtolower', $tables);
+    $partnerIndex = array_search('partner', $lower, true);
+
+    if ($partnerIndex !== false) {
+        $partnerTable = (string) $tables[$partnerIndex];
+        $partnerColumns = $pdo->query("SHOW COLUMNS FROM `{$partnerTable}`")->fetchAll(PDO::FETCH_COLUMN);
+
+        if (!in_array('Mailing_Address', $partnerColumns, true)) {
+            $after = in_array('Address', $partnerColumns, true) ? ' AFTER Address' : '';
+            $pdo->exec("ALTER TABLE `{$partnerTable}` ADD COLUMN Mailing_Address TEXT NULL DEFAULT NULL{$after}");
+        }
     }
 
     $ensured = true;
@@ -125,23 +172,124 @@ function assignAgreementAccessToken(PDO $pdo, int $agreeId, ?string $existingTok
     return $token;
 }
 
+function normalizeAgreementAccessToken(string $token): string
+{
+    $token = strtolower(trim($token));
+    $token = preg_replace('/\s+/', '', $token) ?? '';
+
+    if (preg_match('/([a-f0-9]{64})/', $token, $matches) === 1) {
+        return $matches[1];
+    }
+
+    return $token;
+}
+
 function isValidAgreementAccessToken(string $token): bool
 {
-    return preg_match('/^[a-f0-9]{64}$/i', $token) === 1;
+    return preg_match('/^[a-f0-9]{64}$/i', normalizeAgreementAccessToken($token)) === 1;
+}
+
+function pdmisAppPath(string $path = ''): string
+{
+    $path = ltrim(str_replace('\\', '/', $path), '/');
+
+    if (function_exists('appUrl')) {
+        return appUrl($path);
+    }
+
+    $base = '/IS406_PartnershipRegistry';
+
+    return $path === '' ? $base : $base . '/' . $path;
+}
+
+function pdmisDetectLanIpv4(): ?string
+{
+    $configured = getenv('PDMIS_PUBLIC_HOST');
+
+    if (is_string($configured) && trim($configured) !== '') {
+        return trim($configured);
+    }
+
+    if (strncasecmp(PHP_OS, 'WIN', 3) !== 0) {
+        return null;
+    }
+
+    $lines = [];
+    exec('ipconfig', $lines);
+
+    $alias = '';
+    $candidates = [];
+
+    foreach ($lines as $line) {
+        if (preg_match('/adapter (.+):/i', $line, $matches) === 1) {
+            $alias = $matches[1];
+            continue;
+        }
+
+        if (preg_match('/IPv4 Address[.\s]*:\s*([0-9.]+)/i', $line, $matches) !== 1) {
+            continue;
+        }
+
+        $ip = $matches[1];
+
+        if (str_starts_with($ip, '127.') || str_starts_with($ip, '169.254.')) {
+            continue;
+        }
+
+        $score = 1;
+
+        if (stripos($alias, 'Wi-Fi') !== false || stripos($alias, 'Wireless') !== false) {
+            $score = 5;
+        } elseif (stripos($alias, 'vEthernet') !== false) {
+            $score = 0;
+        } elseif (stripos($alias, 'Ethernet') !== false) {
+            $score = 3;
+        }
+
+        if (str_starts_with($ip, '10.') || preg_match('/^192\.168\./', $ip) === 1) {
+            $score += 2;
+        }
+
+        $candidates[] = [$score, $ip];
+    }
+
+    if ($candidates === []) {
+        return null;
+    }
+
+    usort($candidates, static fn (array $left, array $right): int => $right[0] <=> $left[0]);
+
+    return $candidates[0][1];
+}
+
+function pdmisPublicBaseUrl(): string
+{
+    $configured = getenv('PDMIS_PUBLIC_URL');
+
+    if (is_string($configured) && trim($configured) !== '') {
+        return rtrim(trim($configured), '/');
+    }
+
+    $lanIp = pdmisDetectLanIpv4();
+
+    if ($lanIp !== null) {
+        return 'http://' . $lanIp . pdmisAppPath();
+    }
+
+    $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+
+    return $scheme . '://' . $host . pdmisAppPath();
 }
 
 function agreementPublicViewUrl(string $token): string
 {
-    $query = 'token=' . rawurlencode($token);
+    return rtrim(pdmisPublicBaseUrl(), '/') . '/view_agreement.php?token=' . rawurlencode($token);
+}
 
-    if (function_exists('appUrl') && !empty($_SERVER['HTTP_HOST'])) {
-        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-        $host = (string) $_SERVER['HTTP_HOST'];
-
-        return $scheme . '://' . $host . appUrl('view_agreement.php') . '?' . $query;
-    }
-
-    return 'http://localhost/IS406_PartnershipRegistry/view_agreement.php?' . $query;
+function agreementLocalViewUrl(string $token): string
+{
+    return 'http://localhost/IS406_PartnershipRegistry/view_agreement.php?token=' . rawurlencode($token);
 }
 
 function requirePdmisPhpMailer(): void
@@ -210,15 +358,83 @@ function createPdmisPhpMailer(): object
 
     $mail->isSMTP();
     $mail->Host       = PDMIS_MAIL_SMTP_HOST;
-    $mail->Port       = PDMIS_MAIL_SMTP_PORT;
-    $mail->SMTPSecure = PDMIS_MAIL_SMTP_SECURE;
     $mail->SMTPAuth   = true;
     $mail->Username   = PDMIS_MAIL_SMTP_USER;
     $mail->Password   = PDMIS_MAIL_SMTP_PASSWORD;
+    $mail->SMTPSecure = class_exists(PHPMailer::class)
+        ? PHPMailer::ENCRYPTION_STARTTLS
+        : PDMIS_MAIL_SMTP_SECURE;
+    $mail->Port       = PDMIS_MAIL_SMTP_PORT;
     $mail->setFrom(PDMIS_MAIL_FROM_ADDRESS, PDMIS_MAIL_FROM_NAME);
     $mail->isHTML(true);
 
     return $mail;
+}
+
+function isDeliverableNotifyEmail(string $email): bool
+{
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
+    $domain = strtolower((string) substr((string) strrchr($email, '@'), 1));
+
+    return $domain !== 'dwu.ac.pg';
+}
+
+function resolveDirectorNotifyEmail(?string $candidate = null): string
+{
+    if (isDeliverableNotifyEmail(PDMIS_DIRECTOR_NOTIFY_EMAIL)) {
+        return PDMIS_DIRECTOR_NOTIFY_EMAIL;
+    }
+
+    $candidate = trim((string) $candidate);
+
+    return isDeliverableNotifyEmail($candidate) ? $candidate : '';
+}
+
+/**
+ * @param list<string> $recipients
+ * @return array{sent: int, recipients: list<string>, errors: list<string>}
+ */
+function sendPdmisMailToRecipients(object $mail, array $recipients): array
+{
+    $sent = 0;
+    $delivered = [];
+    $errors = [];
+
+    foreach ($recipients as $recipient) {
+        $recipient = trim((string) $recipient);
+
+        if (!isDeliverableNotifyEmail($recipient)) {
+            $errors[] = 'Skipped undeliverable address: ' . $recipient;
+            continue;
+        }
+
+        try {
+            $mail->clearAddresses();
+            $mail->addAddress($recipient);
+            $mail->send();
+            $sent++;
+            $delivered[] = $recipient;
+        } catch (PhpMailerException $exception) {
+            $error = $mail->ErrorInfo !== '' ? $mail->ErrorInfo : $exception->getMessage();
+            $errors[] = $recipient . ': ' . $error;
+            error_log('PDMIS email failed for ' . $recipient . ': ' . $error);
+        } catch (Throwable $exception) {
+            $error = (isset($mail->ErrorInfo) && $mail->ErrorInfo !== '')
+                ? $mail->ErrorInfo
+                : $exception->getMessage();
+            $errors[] = $recipient . ': ' . $error;
+            error_log('PDMIS email failed for ' . $recipient . ': ' . $error);
+        }
+    }
+
+    return [
+        'sent'       => $sent,
+        'recipients' => $delivered,
+        'errors'     => $errors,
+    ];
 }
 
 function fetchOfficeDirectorEmail(PDO $pdo): string
@@ -271,11 +487,14 @@ function fetchUserEmailById(PDO $pdo, int $userId): string
  */
 function fetchAgreementByAccessToken(PDO $pdo, string $token): ?array
 {
+    $token = normalizeAgreementAccessToken($token);
+
     if (!isValidAgreementAccessToken($token)) {
         return null;
     }
 
     ensureAgreementAccessTokenColumn($pdo);
+    ensureAgreementEntryColumns($pdo);
 
     $agreementTable = agreementNotifyTableName($pdo);
     $tables = $pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
@@ -307,10 +526,14 @@ function fetchAgreementByAccessToken(PDO $pdo, string $token): ?array
 
     $sql = "SELECT
                 a.Agree_ID AS id,
-                a.Agreement_Type AS title,
+                COALESCE(NULLIF(a.Agreement_Title, ''), a.Agreement_Type) AS title,
                 a.Partnership_Type AS partnership_type,
                 a.Scope_Description AS scope,
                 p.Name AS partner_name,
+                a.Physical_Address AS physical_address,
+                a.Mailing_Address AS mailing_address,
+                a.Partner_Email AS partner_email,
+                a.Director_Email AS director_email,
                 a.Signed_Date AS signed_date,
                 a.Expiry_Date AS expiry_date,
                 a.Status AS status,
@@ -359,7 +582,7 @@ function fetchAgreementNotificationContext(PDO $pdo, int $agreeId): ?array
     }
 
     $contactJoin = '';
-    $contactSelect = 'NULL AS partner_email';
+    $contactEmailExpr = 'NULL';
 
     if ($contactTable !== null) {
         $contactJoin = "LEFT JOIN (
@@ -368,11 +591,11 @@ function fetchAgreementNotificationContext(PDO $pdo, int $agreeId): ?array
                             GROUP BY Partner_ID
                         ) first_contact ON p.Partner_ID = first_contact.Partner_ID
                         LEFT JOIN `{$contactTable}` ct ON ct.Contact_ID = first_contact.Contact_ID";
-        $contactSelect = 'ct.Email AS partner_email';
+        $contactEmailExpr = 'ct.Email';
     }
 
     $directorJoin = '';
-    $directorSelect = 'NULL AS director_email';
+    $directorEmailExpr = 'NULL';
 
     if ($usersTable !== null) {
         $directorJoin = "LEFT JOIN `{$usersTable}` reviewed_director ON reviewed_director.User_ID = a.Reviewed_By
@@ -384,13 +607,14 @@ function fetchAgreementNotificationContext(PDO $pdo, int $agreeId): ?array
                             ORDER BY User_ID ASC
                             LIMIT 1
                         ) office_director ON 1 = 1";
-        $directorSelect = 'COALESCE(reviewed_director.Email, submitted_director.Email, office_director.Email) AS director_email';
+        $directorEmailExpr = 'COALESCE(reviewed_director.Email, submitted_director.Email, office_director.Email)';
     }
 
     $tokenSelect = 'NULL AS access_token';
 
     try {
         ensureAgreementAccessTokenColumn($pdo);
+        ensureAgreementEntryColumns($pdo);
         $tokenSelect = 'a.access_token';
     } catch (Throwable $ignored) {
         // Keep a null token if the column cannot be ensured.
@@ -398,7 +622,7 @@ function fetchAgreementNotificationContext(PDO $pdo, int $agreeId): ?array
 
     $sql = "SELECT
                 a.Agree_ID AS id,
-                a.Agreement_Type AS title,
+                COALESCE(NULLIF(a.Agreement_Title, ''), a.Agreement_Type) AS title,
                 a.Partnership_Type AS partnership_type,
                 a.Scope_Description AS scope,
                 p.Name AS partner_name,
@@ -406,8 +630,8 @@ function fetchAgreementNotificationContext(PDO $pdo, int $agreeId): ?array
                 a.Expiry_Date AS expiry_date,
                 a.Status AS status,
                 {$tokenSelect},
-                {$contactSelect},
-                {$directorSelect}
+                COALESCE(NULLIF(a.Partner_Email, ''), {$contactEmailExpr}) AS partner_email,
+                COALESCE(NULLIF(a.Director_Email, ''), {$directorEmailExpr}) AS director_email
             FROM `{$agreementTable}` a
             INNER JOIN `{$partnerTable}` p ON a.Partner_ID = p.Partner_ID
             {$contactJoin}
@@ -441,7 +665,7 @@ function agreementNotifyEscape(string $value): string
 /**
  * @param array<string, mixed> $agreement
  */
-function buildNewAgreementRegisteredHtml(array $agreement, string $viewUrl): string
+function buildNewAgreementRegisteredHtml(array $agreement, string $viewUrl, string $localUrl = ''): string
 {
     $title = agreementNotifyEscape(trim((string) ($agreement['title'] ?? 'Partnership Agreement')));
     $partner = agreementNotifyEscape((string) ($agreement['partner_name'] ?? '—'));
@@ -449,6 +673,7 @@ function buildNewAgreementRegisteredHtml(array $agreement, string $viewUrl): str
     $expiry = agreementNotifyEscape(formatAgreementNotifyDate((string) ($agreement['expiry_date'] ?? '')));
     $status = agreementNotifyEscape((string) ($agreement['status'] ?? 'Active'));
     $safeUrl = agreementNotifyEscape($viewUrl);
+    $safeLocal = agreementNotifyEscape($localUrl !== '' ? $localUrl : $viewUrl);
 
     return <<<HTML
 <!DOCTYPE html>
@@ -503,8 +728,12 @@ function buildNewAgreementRegisteredHtml(array $agreement, string $viewUrl): str
                                     View Partnership Agreement
                                 </a>
                             </p>
-                            <p style="margin:16px 0 0;font-size:12px;line-height:1.5;color:#64748b;word-break:break-all;">
-                                Secure access link: {$safeUrl}
+                            <p style="margin:16px 0 0;font-size:12px;line-height:1.5;color:#64748b;">
+                                Open this link on the computer running XAMPP (Apache must be started). A phone or another laptop cannot open a localhost link.
+                            </p>
+                            <p style="margin:10px 0 0;font-size:12px;line-height:1.5;color:#64748b;word-break:break-all;">
+                                On this computer: {$safeLocal}<br>
+                                On the same Wi-Fi network: {$safeUrl}
                             </p>
                         </td>
                     </tr>
@@ -549,53 +778,41 @@ function sendNewAgreementRegisteredEmail(
     $token = assignAgreementAccessToken($pdo, $agreeId, (string) ($agreement['access_token'] ?? ''));
     $agreement['access_token'] = $token;
     $viewUrl = agreementPublicViewUrl($token);
+    $localUrl = agreementLocalViewUrl($token);
 
     $partnerEmail = trim((string) ($partnerEmail ?: ($agreement['partner_email'] ?? '')));
-    $directorEmail = trim((string) ($directorEmail ?: ($agreement['director_email'] ?? '')));
+    $directorEmail = resolveDirectorNotifyEmail(
+        $directorEmail ?: ($agreement['director_email'] ?? fetchOfficeDirectorEmail($pdo))
+    );
 
-    if ($directorEmail === '') {
-        $directorEmail = fetchOfficeDirectorEmail($pdo);
-    }
-
-    $mail = createPdmisPhpMailer();
     $recipients = [];
 
-    if (filter_var($partnerEmail, FILTER_VALIDATE_EMAIL)) {
-        $mail->addAddress($partnerEmail);
+    if (isDeliverableNotifyEmail($partnerEmail)) {
         $recipients[] = $partnerEmail;
+    } elseif ($partnerEmail !== '') {
+        $result['errors'][] = 'Partner email is not deliverable via Gmail SMTP: ' . $partnerEmail;
     }
 
-    if (filter_var($directorEmail, FILTER_VALIDATE_EMAIL) && strcasecmp($directorEmail, $partnerEmail) !== 0) {
-        $mail->addAddress($directorEmail);
+    if ($directorEmail !== '' && strcasecmp($directorEmail, $partnerEmail) !== 0) {
         $recipients[] = $directorEmail;
     }
 
     if ($recipients === []) {
-        $result['errors'][] = 'No valid partner_email or director_email for agreement #' . $agreeId;
+        $result['errors'][] = 'No deliverable partner_email or director_email for agreement #' . $agreeId;
 
         return $result;
     }
 
+    $mail = createPdmisPhpMailer();
     $mail->Subject = 'New Partnership Agreement Registered - Divine Word University';
-    $mail->Body    = buildNewAgreementRegisteredHtml($agreement, $viewUrl);
+    $mail->Body    = buildNewAgreementRegisteredHtml($agreement, $viewUrl, $localUrl);
     $mail->AltBody = trim(html_entity_decode(strip_tags($mail->Body), ENT_QUOTES, 'UTF-8'));
 
-    try {
-        $mail->send();
-        $result['ok'] = true;
-        $result['sent'] = 1;
-        $result['recipients'] = $recipients;
-    } catch (PhpMailerException $exception) {
-        $error = $mail->ErrorInfo !== '' ? $mail->ErrorInfo : $exception->getMessage();
-        $result['errors'][] = $error;
-        error_log('New agreement email failed: ' . $error);
-    } catch (Throwable $exception) {
-        $error = (isset($mail->ErrorInfo) && $mail->ErrorInfo !== '')
-            ? $mail->ErrorInfo
-            : $exception->getMessage();
-        $result['errors'][] = $error;
-        error_log('New agreement email failed: ' . $error);
-    }
+    $delivery = sendPdmisMailToRecipients($mail, $recipients);
+    $result['sent'] = $delivery['sent'];
+    $result['recipients'] = $delivery['recipients'];
+    $result['errors'] = array_merge($result['errors'], $delivery['errors']);
+    $result['ok'] = $delivery['sent'] > 0 && $delivery['errors'] === [];
 
     return $result;
 }

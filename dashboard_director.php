@@ -10,6 +10,7 @@ $pendingProposals = fetchSubmittedProposals($pdo);
 $approvedProposals = fetchApprovedProposals($pdo);
 $pendingCount = count($pendingProposals);
 $approvedCount = count($approvedProposals);
+$draftCount = count(fetchDirectorAgreementDrafts($pdo, (int) $user['id']));
 $counts = fetchAgreementCounts($pdo);
 
 renderDirectorDashboardHeader(
@@ -21,7 +22,7 @@ renderDirectorDashboardHeader(
 
 renderDashboardLogoutAction();
 renderDirectorFlashMessages();
-renderDirectorSubnav('overview', $pendingCount);
+renderDirectorSubnav('overview', $pendingCount, $draftCount);
 ?>
 
 <?php if ($pendingCount > 0): ?>

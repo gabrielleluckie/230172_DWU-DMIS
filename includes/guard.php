@@ -1059,6 +1059,20 @@ function renderDirectorDashboardHeader(
     int $notificationCount = 0,
     array $options = []
 ): void {
+    $pdo = $GLOBALS['pdo'] ?? null;
+
+    if ($pdo instanceof PDO) {
+        if (!function_exists('maybeDispatchExpiringAgreementNotices')) {
+            if (!defined('EXPIRY_NOTIFY_SKIP_AUTORUN')) {
+                define('EXPIRY_NOTIFY_SKIP_AUTORUN', true);
+            }
+
+            require_once __DIR__ . '/check_expiring_agreements.php';
+        }
+
+        maybeDispatchExpiringAgreementNotices($pdo);
+    }
+
     if ($notificationCount <= 0) {
         $notificationCount = count($pendingProposals);
     }
@@ -1079,7 +1093,7 @@ function renderDirectorDashboardHeader(
     ]);
 }
 
-function renderDirectorSubnav(string $activeNav, int $pendingCount = 0): void
+function renderDirectorSubnav(string $activeNav, int $pendingCount = 0, int $draftCount = 0): void
 {
     require __DIR__ . '/views/director-subnav.php';
 }
@@ -1157,10 +1171,10 @@ function renderDirectorDashboardFooter(): void
 function statusBadgeClasses(string $status): string
 {
     return match ($status) {
-        'Active', Agreement::STATUS_ACTIVE         => 'bg-success',
-        'Expired', Agreement::STATUS_EXPIRED      => 'bg-danger',
-        'Expiring Soon', Agreement::STATUS_EXPIRING_SOON, 'Soon to Expire' => 'bg-warning text-dark',
-        default                                     => 'bg-secondary',
+        'Active', Agreement::STATUS_ACTIVE         => 'is-active',
+        'Expired', Agreement::STATUS_EXPIRED      => 'is-expired',
+        'Expiring Soon', Agreement::STATUS_EXPIRING_SOON, 'Soon to Expire' => 'is-soon',
+        default                                     => 'is-other',
     };
 }
 

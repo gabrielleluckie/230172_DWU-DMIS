@@ -13,50 +13,32 @@ require_once __DIR__ . '/includes/guard.php';
 require_once __DIR__ . '/includes/agreement_notify.php';
 
 $user = requireRole($pdo, [ROLE_PARTNERSHIP_DIRECTOR]);
+$registerPath = appUrl('add_agreement.php');
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string) ($_POST['action'] ?? '') === 'register_agreement') {
-    try {
-        ensureAgreementAccessTokenColumn($pdo);
+handleDirectorPartnershipEntryPost($pdo, $user, $registerPath);
 
-        $documentPath = storeUploadedAgreementPdf($_FILES['agreement_pdf'] ?? []);
+$editingDraftId = isset($_GET['draft']) ? (int) $_GET['draft'] : 0;
+$entryForm = [];
 
-        $agreementId = registerActivePartnership($pdo, [
-            'partner_mode'        => (string) ($_POST['partner_mode'] ?? 'existing'),
-            'partner_id'          => (int) ($_POST['partner_id'] ?? 0),
-            'partner_name'        => trim((string) ($_POST['partner_name'] ?? '')),
-            'partner_country'     => trim((string) ($_POST['partner_country'] ?? '')),
-            'partner_address'     => trim((string) ($_POST['partner_address'] ?? '')),
-            'partner_website'     => trim((string) ($_POST['partner_website'] ?? '')),
-            'campus_id'           => (int) ($_POST['campus_id'] ?? 0),
-            'contact_name'        => trim((string) ($_POST['contact_name'] ?? '')),
-            'contact_designation' => trim((string) ($_POST['contact_designation'] ?? '')),
-            'contact_email'       => trim((string) ($_POST['contact_email'] ?? '')),
-            'contact_phone'       => trim((string) ($_POST['contact_phone'] ?? '')),
-            'contact_fax'         => trim((string) ($_POST['contact_fax'] ?? '')),
-            'partnership_type'    => trim((string) ($_POST['partnership_type'] ?? '')),
-            'agreement_type'      => trim((string) ($_POST['agreement_type'] ?? '')),
-            'signed_date'         => trim((string) ($_POST['signed_date'] ?? '')),
-            'expiry_date'         => trim((string) ($_POST['expiry_date'] ?? '')),
-            'scope_description'   => trim((string) ($_POST['scope_description'] ?? '')),
-            'document_path'       => $documentPath,
-        ], (int) $user['id'], $user['name']);
-
-        setFlash(
-            'success',
-            'Agreement #' . $agreementId . ' registered successfully. Notification emails were sent to the partner and director with a secure access link.'
-        );
-    } catch (Throwable $exception) {
-        setFlash('error', $exception->getMessage());
+if ($editingDraftId > 0) {
+    $draftRow = fetchDirectorAgreementDraftById($pdo, (int) $user['id'], $editingDraftId);
+    if ($draftRow === null) {
+        setFlash('error', 'That draft was not found.');
+        redirect($registerPath);
     }
-
-    redirect(appUrl('add_agreement.php'));
+    $entryForm = $draftRow['form'] ?? [];
 }
 
 $pendingProposals = fetchSubmittedProposals($pdo);
 $pendingCount = count($pendingProposals);
+$directorDrafts = fetchDirectorAgreementDrafts($pdo, (int) $user['id']);
+$draftCount = count($directorDrafts);
 $partners = fetchPartners($pdo);
 $campuses = fetchCampuses($pdo);
-$directorEntryFormAction = appUrl('add_agreement.php');
+$directorEntryFormAction = $registerPath;
+$directorEmailPrefill = (string) ($entryForm['director_email'] ?? $user['email'] ?? '');
+$directorDraftsAction = $registerPath;
+$activeNav = $editingDraftId > 0 ? 'drafts' : 'register';
 
 renderDirectorDashboardHeader(
     $user,
@@ -64,7 +46,7 @@ renderDirectorDashboardHeader(
     $pendingProposals,
     $pendingCount,
     [
-        'pageSubtitle'     => 'Register a signed partnership agreement.',
+        'pageSubtitle'     => 'Save a draft at any time, then register it later from Saved Drafts.',
         'extraStylesheets' => [
             assetUrl('css/director-partnership-entry-form.css') . '?v=' . (string) (
                 is_file(__DIR__ . '/css/director-partnership-entry-form.css')
@@ -76,15 +58,23 @@ renderDirectorDashboardHeader(
 );
 
 renderDashboardLogoutAction();
-renderDirectorSubnav('register', $pendingCount);
+renderDirectorSubnav($activeNav, $pendingCount, $draftCount);
 ?>
 
 <div class="director-register-page">
     <?php renderDirectorFlashMessages(); ?>
+    <?php require __DIR__ . '/includes/views/director-agreement-drafts.php'; ?>
     <section class="director-entry-form-panel director-panel">
         <div class="director-panel-header">
-            <h1>Active Partnership Entry Form</h1>
-            <p>Register a signed partnership agreement. The partner and director will receive a secure view link by email.</p>
+            <h1><?= $editingDraftId > 0 ? 'Edit Draft Partnership' : 'Active Partnership Entry Form' ?></h1>
+            <p>
+                <?php if ($editingDraftId > 0): ?>
+                    Finish this draft and click Register Agreement, or Save Draft again. You can still start a
+                    <a href="<?= e($registerPath) ?>">new agreement</a> without losing other drafts.
+                <?php else: ?>
+                    Register a signed partnership agreement. The partner and director will receive a secure view link by email.
+                <?php endif; ?>
+            </p>
         </div>
 
         <?php require __DIR__ . '/includes/views/director-partnership-entry-form.php'; ?>
